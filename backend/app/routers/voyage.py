@@ -1,9 +1,9 @@
-"""航次管理接口：维护航次，覆盖确认开航、确认到港、结航航次等动作。"""
+"""航次管理接口：维护航次，覆盖确认开航、确认到港、结航航次、时间补录与状态重排。"""
 from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 
 from app.schemas import ActionResult, EntryPayload, PageResult
 from app.services.voyage import VoyageService
@@ -12,7 +12,7 @@ router = APIRouter(prefix="/api/voyage", tags=["航次管理"])
 
 service = VoyageService()
 
-LIST_FIELDS = ["航次编号", "关联船舶", "进口航次号", "出口航次号", "预计到港", "实际到港", "航线名称", "航次状态"]
+LIST_FIELDS = ["航次编号", "关联船舶", "进口航次号", "出口航次号", "预计到港", "实际开航", "实际到港", "结航时间", "航线名称", "航次状态"]
 STATUSES = ["待开航", "航行中", "已到港", "已结航"]
 
 
@@ -48,14 +48,54 @@ def create_entry(payload: EntryPayload) -> ActionResult:
     return ActionResult(ok=True, message="航次已登记", entry=entry)
 
 
+async def _extract_values(request: Request, payload: EntryPayload) -> dict[str, Any]:
+    """兼容 {"values": {...}} 与平铺 {...} 两种请求体（前端历史页面用平铺）。"""
+    values = dict(payload.values)
+    if not values:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if isinstance(body, dict):
+            values = {k: v for k, v in body.items() if k not in ("remark",)}
+    return values
+
+
 @router.post("/{entry_id}/actions", response_model=ActionResult)
-def run_action(entry_id: int, payload: EntryPayload) -> ActionResult:
-    """对单条航次执行确认开航、确认到港、结航航次；不允许的动作会被拦下并说明原因。"""
-    action = str(payload.values.get("action") or "").strip()
-    entry, message = service.run_action(entry_id, action)
+async def run_action(entry_id: int, request: Request, payload: EntryPayload) -> ActionResult:
+    """对单条航次执行确认开航、确认到港、结航航次。
+
+    操作人必传；实际到港早于开航、时间缺失、重复结航、状态回退都会被拦下并说明原因。
+    请求体兼容 {"values": {...}} 与平铺 {...} 两种信封。
+    """
+    values = await _extract_values(request, payload)
+    action = str(values.pop("action", "") or "").strip()
+    entry, message = service.run_action(entry_id, action, values)
     if entry is None:
         return ActionResult(ok=False, message=message)
     return ActionResult(ok=True, message=message, entry=entry)
+
+
+@router.post("/{entry_id}/backfill", response_model=ActionResult)
+async def backfill_times(entry_id: int, request: Request, payload: EntryPayload) -> ActionResult:
+    """线下确认后补录业务时间，并按预计到港/实际到港把航次状态向前重排。"""
+    values = await _extract_values(request, payload)
+    entry, message = service.backfill_times(entry_id, values)
+    if entry is None:
+        return ActionResult(ok=False, message=message)
+    return ActionResult(ok=True, message=message, entry=entry)
+
+
+@router.post("/reconcile", response_model=ActionResult)
+async def reconcile_entries(request: Request, payload: EntryPayload) -> ActionResult:
+    """按实际开航/到港时间对全量航次重排状态；时间缺失或倒挂的航次跳过并说明。"""
+    values = await _extract_values(request, payload)
+    result = service.reconcile(values)
+    return ActionResult(
+        ok=bool(result.get("ok")),
+        message=str(result.get("message", "")),
+        entry={"items": result.get("items", [])} if result.get("ok") else None,
+    )
 
 
 @router.get("/export")
