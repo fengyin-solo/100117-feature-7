@@ -31,12 +31,19 @@
       <thead>
         <tr>
           <th v-for="column in columns" :key="column">{{ column }}</th>
+          <th>在港状态（随航次同步）</th>
           <th>可执行动作</th>
         </tr>
       </thead>
       <tbody>
         <tr v-for="row in rows" :key="String(row.id)">
           <td v-for="column in columns" :key="column">{{ row[column] ?? '—' }}</td>
+          <td>
+            <span v-if="row['在港'] === true" class="port-tag in">在港</span>
+            <span v-else-if="row['在港'] === false" class="port-tag out">离港</span>
+            <span v-else>—</span>
+            <small v-if="row['港态同步时间']">（{{ row['港态同步时间'] }}）</small>
+          </td>
           <td class="row-actions">
             <button
               v-for="action in actions"
@@ -50,7 +57,7 @@
           </td>
         </tr>
         <tr v-if="!rows.length">
-          <td :colspan="columns.length + 1" class="empty-state">暂无船舶档案数据，可先登记船舶</td>
+          <td :colspan="columns.length + 2" class="empty-state">暂无船舶档案数据，可先登记船舶</td>
         </tr>
       </tbody>
     </table>
@@ -67,7 +74,7 @@ import { onMounted, ref } from 'vue'
 
 import { request } from '@/api/client'
 
-type Row = Record<string, string | number | null>
+type Row = Record<string, string | number | boolean | null>
 
 const ENDPOINT = '/api/vessel'
 const columns = ["船舶编号", "船舶名称", "船舶类型", "载重吨位", "船长", "船宽", "所属船公司", "船舶状态"]
@@ -128,3 +135,15 @@ async function reload() {
 
 onMounted(reload)
 </script>
+
+<style scoped>
+.port-tag {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 10px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.port-tag.in { background: #d3f9d8; color: #2b8a3e; }
+.port-tag.out { background: #e9ecef; color: #495057; }
+</style>
